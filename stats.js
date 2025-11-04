@@ -10,10 +10,10 @@ document.addEventListener('DOMContentLoaded', () => {
     // Input validation and formatting
     const handleInputValidation = (input) => {
         let value = parseInt(input.value) || 0;
-        
+
         // Clamp value between 0 and 100
         value = Math.max(0, Math.min(100, value));
-        
+
         // Update input with validated value
         input.value = value;
     };
@@ -35,10 +35,10 @@ document.addEventListener('DOMContentLoaded', () => {
         // Prevent invalid characters
         input.addEventListener('keypress', (e) => {
             // Allow only numbers, backspace, delete, arrow keys
-            if (!/[0-9]/.test(e.key) && 
-                e.key !== 'Backspace' && 
-                e.key !== 'Delete' && 
-                e.key !== 'ArrowLeft' && 
+            if (!/[0-9]/.test(e.key) &&
+                e.key !== 'Backspace' &&
+                e.key !== 'Delete' &&
+                e.key !== 'ArrowLeft' &&
                 e.key !== 'ArrowRight' &&
                 e.key !== 'Tab') {
                 e.preventDefault();
@@ -75,7 +75,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 newInput.value = '0';
                 newInput.classList.add('dynamic-input');
                 newInput.setAttribute('data-condition', 'any');
-                
+
                 // Apply validation to new input
                 setupInputValidation(newInput);
 
@@ -225,96 +225,85 @@ document.addEventListener('DOMContentLoaded', () => {
         let bestScore = -Infinity;
 
         for (const config of allCombinations) {
-            // For each stat with post-shrine requirements, try both:
-            // 1. Including in shrine (1 point pre-shrine)
-            // 2. Pure post-shrine investment (0 points pre-shrine)
+            // Build pre-shrine allocation
+            const preShrine = {};
+            const statsToInclude = new Set();
 
-            const statsWithPostRequirements = Object.entries(config)
-                .filter(([_, data]) => data.minPost > 0 && data.minPre === 0)
-                .map(([name, _]) => name);
-
-            // Generate variants: each stat can be "in shrine" or "post-only"
-            const shrineVariants = Math.pow(2, statsWithPostRequirements.length);
-
-            for (let variant = 0; variant < shrineVariants; variant++) {
-                const preShrine = {};
-
-                // Add stats with explicit pre-shrine requirements
-                for (const [statName, data] of Object.entries(config)) {
-                    if (data.minPre > 0) {
-                        preShrine[statName] = {
-                            currentPre: data.minPre,
-                            isAttunement: data.isAttunement
-                        };
-                    }
-                }
-
-                // Determine which post-requirement stats to include in shrine
-                statsWithPostRequirements.forEach((statName, index) => {
-                    const includeInShrine = (variant >> index) & 1;
-                    if (includeInShrine) {
-                        preShrine[statName] = {
-                            currentPre: 1,
-                            isAttunement: config[statName].isAttunement
-                        };
-                    }
-                });
-
-                // Calculate total pre-shrine investment
-                let totalPreInvestment = 0;
-                for (const data of Object.values(preShrine)) {
-                    totalPreInvestment += data.currentPre;
-                }
-
-                if (totalPreInvestment > MAX_TOTAL_POINTS) continue;
-
-                // Simulate shrine averaging
-                const shrineResult = simulateShrineAveraging(preShrine);
-
-                // Calculate post-shrine investment needed
-                let isValid = true;
-                let totalPostInvestment = 0;
-                const finalStats = {};
-
-                for (const [statName, data] of Object.entries(config)) {
-                    const postShrineValue = shrineResult.postShrine[statName] || 0;
-                    const neededPost = Math.max(0, data.minPost - postShrineValue);
-
-                    finalStats[statName] = postShrineValue + neededPost;
-                    totalPostInvestment += neededPost;
-
-                    // Check validity
-                    if (finalStats[statName] > MAX_STAT_VALUE) {
-                        isValid = false;
-                        break;
-                    }
-
-                    // Verify pre-shrine requirement
-                    if (data.minPre > 0 && (!preShrine[statName] || preShrine[statName].currentPre < data.minPre)) {
-                        isValid = false;
-                        break;
-                    }
-                }
-
-                const totalPoints = totalPostInvestment + totalPreInvestment;
-                if (!isValid || totalPoints > MAX_TOTAL_POINTS) continue;
-
-                // Calculate score (prefer more leftover points)
-                const leftoverPoints = MAX_TOTAL_POINTS - totalPoints;
-                const score = leftoverPoints;
-
-                if (score > bestScore) {
-                    bestScore = score;
-                    bestSolution = {
-                        preShrine: preShrine,
-                        postShrine: shrineResult.postShrine,
-                        finalStats: finalStats,
-                        totalPreInvestment: totalPreInvestment,
-                        totalPostInvestment: totalPostInvestment,
-                        leftoverPoints: leftoverPoints,
-                        shrineLeftover: shrineResult.leftoverPoints
+            for (const [statName, data] of Object.entries(config)) {
+                if (data.minPre > 0) {
+                    preShrine[statName] = {
+                        currentPre: data.minPre,
+                        isAttunement: data.isAttunement
                     };
+                    statsToInclude.add(statName);
                 }
+
+                // If we need post-shrine points but no pre-shrine, invest 1 point to include it
+                if (data.minPost > 0 && data.minPre === 0) {
+                    preShrine[statName] = {
+                        currentPre: 1,
+                        isAttunement: data.isAttunement
+                    };
+                    statsToInclude.add(statName);
+                }
+            }
+
+            // Calculate total pre-shrine investment
+            let totalPreInvestment = 0;
+            for (const data of Object.values(preShrine)) {
+                totalPreInvestment += data.currentPre;
+            }
+
+            if (totalPreInvestment > MAX_TOTAL_POINTS) continue;
+
+            // Simulate shrine averaging
+            const shrineResult = simulateShrineAveraging(preShrine);
+
+            // Check if post-shrine values meet requirements
+            let isValid = true;
+            let totalPostInvestment = 0;
+            const finalStats = {};
+
+            for (const [statName, data] of Object.entries(config)) {
+                const postShrineValue = shrineResult.postShrine[statName] || 0;
+                const neededPost = Math.max(0, data.minPost - postShrineValue);
+
+                finalStats[statName] = postShrineValue + neededPost;
+                totalPostInvestment += neededPost;
+
+                // Check validity
+                if (finalStats[statName] > MAX_STAT_VALUE) {
+                    isValid = false;
+                    break;
+                }
+
+                // Verify pre-shrine requirement
+                if (preShrine[statName] && preShrine[statName].currentPre < data.minPre) {
+                    isValid = false;
+                    break;
+                }
+            }
+
+
+
+            const totalPoints = totalPostInvestment + totalPreInvestment;
+            if (!isValid || totalPoints > MAX_TOTAL_POINTS) continue;
+            console.log(finalStats)
+            // Calculate score (prefer more leftover points)
+            const leftoverPoints = MAX_TOTAL_POINTS - totalPoints;// + shrineResult.leftoverPoints;
+            const score = leftoverPoints;
+
+            if (score > bestScore) {
+                bestScore = score;
+                bestSolution = {
+                    preShrine: preShrine,
+                    postShrine: shrineResult.postShrine,
+                    finalStats: finalStats,
+                    totalPreInvestment: totalPreInvestment,
+                    totalPostInvestment: totalPostInvestment,
+                    leftoverPoints: leftoverPoints,
+                    shrineLeftover: shrineResult.leftoverPoints
+                };
             }
         }
 
@@ -386,7 +375,7 @@ document.addEventListener('DOMContentLoaded', () => {
             // Check for bottlenecking in non-attunement stats only
             for (const statName of affectedStats) {
                 const isAttunement = attunements.includes(statName.toLowerCase());
-               
+
                 if (!isAttunement && !bottlenecked.includes(statName)) {
                     const prevStat = previousStats[statName];
                     const shrineStat = preshrineBuild[statName];
