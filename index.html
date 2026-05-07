@@ -1103,6 +1103,30 @@
         </div>
     </div>
 
+    <!-- Stat Change Lost Talent Modal -->
+    <div id="statChangeLostTalentModal" class="talent-confirmation-modal">
+        <div class="talent-confirmation-content">
+            <div class="talent-confirmation-header">
+                <h2>Talent No Longer Available</h2>
+                <p id="statChangeLostTalentMessage"></p>
+            </div>
+            <div class="talent-confirmation-body">
+                <div class="talent-list-section">
+                    <h3>Talent Being Lost</h3>
+                    <ul id="statChangeLostTalentList"></ul>
+                </div>
+                <div class="talent-list-section" id="statChangeDependentsSection" style="display:none;">
+                    <h3>Dependent Talents That Will Also Be Removed</h3>
+                    <ul id="statChangeDependentsList"></ul>
+                </div>
+            </div>
+            <div class="talent-confirmation-footer">
+                <button class="confirm-btn" id="statChangeLostConfirmBtn">Confirm &amp; Remove All</button>
+                <button class="decline-btn" id="statChangeLostCancelBtn">Cancel Stat Change</button>
+            </div>
+        </div>
+    </div>
+
     <!-- Notification Container -->
     <div id="notificationContainer" class="notification-container"></div>
 

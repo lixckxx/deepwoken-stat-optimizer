@@ -102,44 +102,193 @@ document.addEventListener('DOMContentLoaded', () => {
         input.value = value;
     }
 
+    // ==========================================
+    // STAT CHANGE LOST TALENT VALIDATION
+    // ==========================================
+
+    // Collect all selected talents that would become unavailable given hypothetical pre/post stats
+    function getInvalidatedTalents(newPre, newPost) {
+        const preDerived = calculateBodyAndMind(newPre);
+        const postDerived = calculateBodyAndMind(newPost);
+        // Power derived from post-shrine point total using shared helper
+        const currentPower = getPowerFromStatTotal(newPost);
+
+        const invalidated = [];
+
+        for (const id of selectedTalents) {
+            const talent = allTalents.find(t => t.id === id);
+            if (!talent) continue;
+
+            const reqs = getTalentRequirements(talent);
+            if (reqs.length === 0) continue;
+
+            // Check Power requirements
+            let powerOk = true;
+            for (const req of reqs) {
+                if (req.isPower || req.stat === 'Power') {
+                    if (currentPower < req.value) { powerOk = false; break; }
+                }
+            }
+
+            const nonPowerReqs = reqs.filter(r => !r.isPower && r.stat !== 'Power');
+
+            const metIn = (stats, derived) => nonPowerReqs.every(req => {
+                const val = (req.stat === 'Body' || req.stat === 'Mind')
+                    ? (derived[req.stat] || 0)
+                    : (stats[req.stat] || 0);
+                return val >= req.value;
+            });
+
+            const statOk = nonPowerReqs.length === 0 || metIn(newPre, preDerived) || metIn(newPost, postDerived);
+
+            if (!powerOk || !statOk) {
+                invalidated.push(talent);
+            }
+        }
+        return invalidated;
+    }
+
+    // Get all selected talents that depend (via reqs.from) on the given talent
+    function getDependentSelectedTalents(baseTalent) {
+        const dependents = [];
+        for (const id of selectedTalents) {
+            const t = allTalents.find(x => x.id === id);
+            if (!t || t.id === baseTalent.id) continue;
+            const required = getRequiredTalentNames(t);
+            if (required.some(name => normalizeTalentName(name).toLowerCase() === normalizeTalentName(baseTalent.name).toLowerCase())) {
+                dependents.push(t);
+            }
+        }
+        return dependents;
+    }
+
+    // Show the lost-talent modal and return a promise resolving to 'confirm' or 'cancel'
+    function showStatChangeLostTalentModal(lostTalents, allToRemove, revertFn, commitFn) {
+        const modal = document.getElementById('statChangeLostTalentModal');
+        const msg = document.getElementById('statChangeLostTalentMessage');
+        const lostList = document.getElementById('statChangeLostTalentList');
+        const depSection = document.getElementById('statChangeDependentsSection');
+        const depList = document.getElementById('statChangeDependentsList');
+        const confirmBtn = document.getElementById('statChangeLostConfirmBtn');
+        const cancelBtn = document.getElementById('statChangeLostCancelBtn');
+
+        msg.textContent = `The following talent${lostTalents.length > 1 ? 's' : ''} will no longer be available with your new stats:`;
+
+        lostList.innerHTML = '';
+        lostTalents.forEach(t => {
+            const li = document.createElement('li');
+            li.textContent = t.name;
+            lostList.appendChild(li);
+        });
+
+        const dependents = allToRemove.filter(t => !lostTalents.find(l => l.id === t.id));
+        if (dependents.length > 0) {
+            depSection.style.display = '';
+            depList.innerHTML = '';
+            dependents.forEach(t => {
+                const li = document.createElement('li');
+                li.textContent = t.name;
+                depList.appendChild(li);
+            });
+        } else {
+            depSection.style.display = 'none';
+            depList.innerHTML = '';
+        }
+
+        modal.classList.add('active');
+
+        const cleanup = () => {
+            modal.classList.remove('active');
+            confirmBtn.removeEventListener('click', onConfirm);
+            cancelBtn.removeEventListener('click', onCancel);
+        };
+
+        const onConfirm = () => {
+            cleanup();
+            allToRemove.forEach(t => selectedTalents.delete(t.id));
+            if (commitFn) commitFn();
+            renderBothPanels();
+            showNotification(`Removed ${allToRemove.length} talent${allToRemove.length > 1 ? 's' : ''} that are no longer available.`, 'warning');
+        };
+
+        const onCancel = () => {
+            cleanup();
+            revertFn();
+        };
+
+        confirmBtn.addEventListener('click', onConfirm);
+        cancelBtn.addEventListener('click', onCancel);
+    }
+
+    // Apply stat input change, checking for newly-invalidated selected talents
+    function applyStatInputChange(input) {
+        let value = parseInt(input.value) || 0;
+        value = Math.max(0, Math.min(100, value));
+        input.value = value;
+
+        const statRow = input.closest('.stat-row.simple');
+        const statName = statRow.getAttribute('data-stat');
+        const dualGroup = input.closest('.dual-input-group');
+        const preInput = dualGroup.querySelector('.pre-shrine');
+        const postInput = dualGroup.querySelector('.post-shrine');
+
+        syncToOptimizer(statName, parseInt(preInput.value) || 0, parseInt(postInput.value) || 0);
+        updateSparePoints();
+
+        if (selectedTalents.size === 0) {
+            input.dataset.lastValid = parseInt(input.value) || 0;
+            renderBothPanels();
+            return;
+        }
+
+        // Build hypothetical pre/post stats with the new value
+        const { pre: newPre, post: newPost } = collectPrePostStats();
+        const invalidated = getInvalidatedTalents(newPre, newPost);
+
+        if (invalidated.length === 0) {
+            input.dataset.lastValid = parseInt(input.value) || 0;
+            renderBothPanels();
+            return;
+        }
+
+        // Collect all dependents of invalidated talents
+        const toRemoveSet = new Set(invalidated.map(t => t.id));
+        invalidated.forEach(t => {
+            getDependentSelectedTalents(t).forEach(dep => toRemoveSet.add(dep.id));
+        });
+        const allToRemove = Array.from(toRemoveSet).map(id => allTalents.find(t => t.id === id)).filter(Boolean);
+
+        // Remember the old value so we can revert (before we saved the new one as lastValid)
+        const oldValue = input.dataset.lastValid !== undefined ? parseInt(input.dataset.lastValid) : 0;
+        const revertFn = () => {
+            input.value = oldValue;
+            input.dataset.lastValid = oldValue;
+            syncToOptimizer(statName, parseInt(preInput.value) || 0, parseInt(postInput.value) || 0);
+            updateSparePoints();
+            renderBothPanels();
+        };
+
+        // Don't update lastValid yet — wait for user to confirm
+        const commitFn = () => { input.dataset.lastValid = parseInt(input.value) || 0; };
+        showStatChangeLostTalentModal(invalidated, allToRemove, revertFn, commitFn);
+        return; // early return — modal handles the rest
+    }
+
     // Setup input validation for simple inputs
     const setupSimpleInputValidation = (input) => {
         const statRow = input.closest('.stat-row.simple');
         const statName = statRow.getAttribute('data-stat');
 
+        // Track the last committed valid value so we can revert on cancel
+        input.dataset.lastValid = parseInt(input.value) || 0;
+
         input.addEventListener('blur', () => {
-            let value = parseInt(input.value) || 0;
-            value = Math.max(0, Math.min(100, value));
-            input.value = value;
-
-            // Sync to optimizer
-            const dualGroup = input.closest('.dual-input-group');
-            const preInput = dualGroup.querySelector('.pre-shrine');
-            const postInput = dualGroup.querySelector('.post-shrine');
-            syncToOptimizer(statName, parseInt(preInput.value) || 0, parseInt(postInput.value) || 0);
-
-            // Update spare points 
-            updateSparePoints();
-
-            // Re-render talents to update availability
-            renderBothPanels();
+            applyStatInputChange(input);
         });
 
         input.addEventListener('keydown', (e) => {
             if (e.key === 'Enter') {
-                let value = parseInt(input.value) || 0;
-                value = Math.max(0, Math.min(100, value));
-                input.value = value;
-
-                // Sync to optimizer
-                const dualGroup = input.closest('.dual-input-group');
-                const preInput = dualGroup.querySelector('.pre-shrine');
-                const postInput = dualGroup.querySelector('.post-shrine');
-                syncToOptimizer(statName, parseInt(preInput.value) || 0, parseInt(postInput.value) || 0);
-
-                // Update spare points
-                updateSparePoints();
-
+                applyStatInputChange(input);
                 input.blur();
             }
         });
@@ -258,6 +407,45 @@ document.addEventListener('DOMContentLoaded', () => {
             sparePointsElement.textContent = sparePoints;
         }
     }
+
+    // Power is derived from total invested points, not a separate investable stat.
+    // Power 1 at creation (30 pts). Power 2 at 45 pts (30 + 15). Power N at 30 + (N-1)*15 pts.
+    // Formula: 1 + floor((pts - 30) / 15), clamped 1–20.
+    function calculateCurrentPower() {
+        const totalPoints = calculateTotalPoints();
+        if (totalPoints < 30) return 1;
+        return Math.min(20, Math.floor((totalPoints - 30) / 15) + 1);
+    }
+
+    // Compute power from an arbitrary set of stat totals (used for pre-shrine classification)
+    function getPowerFromStatTotal(statsObj) {
+        const attunements = ['Flamecharm', 'Frostdraw', 'Thundercall', 'Galebreathe', 'Shadowcast', 'Ironsing', 'Bloodrend'];
+        let total = 0;
+        let attunementCount = 0;
+        for (const [stat, val] of Object.entries(statsObj)) {
+            const v = val || 0;
+            if (attunements.includes(stat) && v > 0) attunementCount++;
+            total += v;
+        }
+        if (attunementCount > 0) total -= (attunementCount - 1);
+        if (total < 30) return 1;
+        return Math.min(20, Math.floor((total - 30) / 15) + 1);
+    }
+
+    // Collect pre and post stats separately from the build tab
+    function collectPrePostStats() {
+        const pre = {};
+        const post = {};
+        document.querySelectorAll('#stats-tab .stat-row.simple').forEach(row => {
+            const statName = row.getAttribute('data-stat');
+            const preVal = parseInt(row.querySelector('.pre-shrine').value) || 0;
+            const postVal = parseInt(row.querySelector('.post-shrine').value) || 0;
+            pre[statName] = preVal;
+            post[statName] = postVal;
+        });
+        return { pre, post };
+    }
+
     function getCurrentMaxBuildStats() {
         const stats = {};
         document.querySelectorAll('#stats-tab .stat-row.simple').forEach(row => {
@@ -3309,8 +3497,8 @@ document.addEventListener('DOMContentLoaded', () => {
         // Get direct requirements - USE THE NEW RESOLVER
         const directReqs = resolveBodyMindRequirements(talent);
         directReqs.forEach(req => {
-            // Skip Body and Mind - they should already be resolved
-            if (req.stat === 'Body' || req.stat === 'Mind') {
+            // Skip Body, Mind, and Power - Power is derived from points, not investable
+            if (req.stat === 'Body' || req.stat === 'Mind' || req.isPower || req.stat === 'Power') {
                 return;
             }
 
@@ -3324,8 +3512,8 @@ document.addEventListener('DOMContentLoaded', () => {
         prerequisites.forEach(prereqTalent => {
             const prereqReqs = resolveBodyMindRequirements(prereqTalent); // USE RESOLVER HERE TOO
             prereqReqs.forEach(req => {
-                // Skip Body and Mind - they should already be resolved
-                if (req.stat === 'Body' || req.stat === 'Mind') {
+                // Skip Body, Mind, and Power - Power is derived from points, not investable
+                if (req.stat === 'Body' || req.stat === 'Mind' || req.isPower || req.stat === 'Power') {
                     return;
                 }
 
@@ -3375,30 +3563,34 @@ document.addEventListener('DOMContentLoaded', () => {
 
     function isTalentAvailable(talent, currentStats) {
         const requirements = getTalentRequirements(talent);
-
-        // Talent is available if it has no requirements or all requirements are met
         if (requirements.length === 0) return true;
 
-        // Calculate Body and Mind from current stats
-        const derivedStats = calculateBodyAndMind(currentStats);
-
+        // Check Power requirements using calculated power level (not an investable stat).
+        // Power is derived from total invested points: Power N = floor(points/15)+1, max 20.
+        const currentPower = calculateCurrentPower();
         for (const req of requirements) {
-            let currentValue;
-
-            // Check if requirement is for Body or Mind
-            if (req.stat === 'Body' || req.stat === 'Mind') {
-                currentValue = derivedStats[req.stat];
-            } else {
-                currentValue = currentStats[req.stat] || 0;
-            }
-
-            // Check if the current stat value is less than the required value
-            if (currentValue < req.value) {
-                return false;
+            if (req.isPower || req.stat === 'Power') {
+                if (currentPower < req.value) return false;
             }
         }
 
-        return true;
+        const nonPowerReqs = requirements.filter(r => !r.isPower && r.stat !== 'Power');
+        if (nonPowerReqs.length === 0) return true;
+
+        // Requirements must be satisfied SIMULTANEOUSLY (all pre-shrine or all post-shrine).
+        // Using max(pre, post) per stat would falsely allow e.g. STR 30 pre-only + FTD 30 post-only.
+        const { pre, post } = collectPrePostStats();
+        const preDerived = calculateBodyAndMind(pre);
+        const postDerived = calculateBodyAndMind(post);
+
+        const metIn = (stats, derived) => nonPowerReqs.every(req => {
+            const val = (req.stat === 'Body' || req.stat === 'Mind')
+                ? (derived[req.stat] || 0)
+                : (stats[req.stat] || 0);
+            return val >= req.value;
+        });
+
+        return metIn(pre, preDerived) || metIn(post, postDerived);
     }
 
     // Function to sort talents
@@ -4678,10 +4870,15 @@ document.addEventListener('DOMContentLoaded', () => {
                 // No requirements - available immediately (Pre-Shrine)
                 preShrineTalents.push(talent);
             } else if (allPrerequisitesSelected) {
-                // All prerequisites are selected, check if requirements can be met pre-shrine
-                const canGetPreShrine = requirements.every(req =>
-                    (preShrineStats[req.stat] || 0) >= req.value
-                );
+                // All prerequisites are selected, check if requirements can be met pre-shrine.
+                // Power requirements are checked against the pre-shrine point total, not a stat field.
+                const preShrinePower = getPowerFromStatTotal(preShrineStats);
+                const canGetPreShrine = requirements.every(req => {
+                    if (req.isPower || req.stat === 'Power') {
+                        return preShrinePower >= req.value;
+                    }
+                    return (preShrineStats[req.stat] || 0) >= req.value;
+                });
 
                 if (canGetPreShrine) {
                     preShrineTalents.push(talent);
